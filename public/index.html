@@ -1,0 +1,296 @@
+<!-- public/index.html -->
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>포켓몬 타입 스피드 퀴즈 온라인</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-white min-h-screen flex flex-col items-center p-4">
+
+  <!-- 1. 닉네임 설정 화면 -->
+  <div id="screen-nickname" class="w-full max-w-md bg-slate-800 rounded-2xl p-6 mt-20 shadow-xl border border-slate-700">
+    <h1 class="text-2xl font-bold text-center text-yellow-400 mb-2">⚡ 포켓몬 타입 퀴즈 온라인</h1>
+    <p class="text-slate-400 text-sm text-center mb-6">전 세대 포켓몬 실시간 멀티플레이 스피드 대결</p>
+    <input id="input-nickname" type="text" maxlength="12" placeholder="사용할 닉네임 입력 (최대 12자)"
+      class="w-full p-3 rounded-lg bg-slate-900 border border-slate-600 mb-4 focus:outline-none focus:border-yellow-400" />
+    <button onclick="submitNickname()" class="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-3 rounded-lg">
+      입장하기
+    </button>
+  </div>
+
+  <!-- 2. 로비 화면 (방 만들기 / 방 참가) -->
+  <div id="screen-lobby" class="hidden w-full max-w-4xl mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
+    <!-- 방 생성 & 코드 입장 -->
+    <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700">
+      <h2 class="text-xl font-bold text-yellow-400 mb-4">🏠 게임방 만들기</h2>
+      <label class="block text-sm text-slate-300 mb-1">방 제목</label>
+      <input id="room-title" type="text" placeholder="누구나 환영! 포켓몬 고수만"
+        class="w-full p-2.5 rounded bg-slate-900 border border-slate-600 mb-4" />
+
+      <label class="block text-sm text-slate-300 mb-1">진행 라운드 수 (스페셜 조건 20% 확률 자동 등장)</label>
+      <select id="room-rounds" class="w-full p-2.5 rounded bg-slate-900 border border-slate-600 mb-6">
+        <option value="5">5 라운드 (빠른 게임)</option>
+        <option value="10" selected>10 라운드 (표준)</option>
+        <option value="15">15 라운드</option>
+        <option value="20">20 라운드 (장기전)</option>
+        <option value="30">30 라운드</option>
+      </select>
+
+      <button onclick="createRoom()" class="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-bold py-3 rounded-lg mb-6">
+        방 생성하기 (최대 10인)
+      </button>
+
+      <hr class="border-slate-700 my-4" />
+      <h3 class="text-sm font-bold text-slate-300 mb-2">🔑 방 코드로 바로 입장</h3>
+      <div class="flex gap-2">
+        <input id="join-code" type="text" placeholder="4자리 코드 (예: AB12)" class="flex-1 p-2.5 rounded bg-slate-900 border border-slate-600 uppercase" />
+        <button onclick="joinByCode()" class="bg-blue-500 hover:bg-blue-400 px-5 rounded font-bold">입장</button>
+      </div>
+    </div>
+
+    <!-- 실시간 방 목록 -->
+    <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 flex flex-col">
+      <h2 class="text-xl font-bold text-blue-400 mb-4">🌐 현재 열린 방 목록</h2>
+      <div id="room-list-container" class="flex-1 space-y-2 overflow-y-auto max-h-80"></div>
+    </div>
+  </div>
+
+  <!-- 3. 게임방 화면 -->
+  <div id="screen-game" class="hidden w-full max-w-6xl mt-4 grid grid-cols-1 lg:grid-cols-4 gap-4">
+    <!-- 좌측: 참가자 목록 (최대 10명) -->
+    <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700">
+      <div class="flex justify-between items-center mb-3">
+        <span id="badge-room-code" class="bg-slate-700 px-3 py-1 rounded text-sm font-mono text-yellow-400">CODE: ----</span>
+        <span id="badge-round" class="text-sm text-slate-300 font-bold">대기 중</span>
+      </div>
+      <h3 class="font-bold text-slate-300 mb-2">참가 트레이너 (<span id="player-count">0</span>/10)</h3>
+      <div id="player-list" class="space-y-2 mb-4"></div>
+      <button id="btn-start-game" onclick="startGame()" class="hidden w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-3 rounded-xl">
+        🚀 게임 시작하기
+      </button>
+    </div>
+
+    <!-- 중앙: 타입 지목 & 문제 전광판 -->
+    <div class="lg:col-span-2 bg-slate-800 p-5 rounded-2xl border border-slate-700 flex flex-col justify-between min-h-[460px]">
+      <div id="arena-status" class="text-center py-6">
+        <p class="text-lg text-slate-300">방장이 게임을 시작하기를 기다리는 중...</p>
+      </div>
+
+      <!-- 타입 선택 그리드 (지목자에게만 활성화) -->
+      <div id="type-picker-box" class="hidden">
+        <p id="picker-guide" class="text-center text-yellow-400 font-bold mb-3"></p>
+        <div id="type-buttons" class="grid grid-cols-6 gap-2"></div>
+      </div>
+
+      <!-- 정답 결과 도감 모달 영역 -->
+      <div id="round-result-box" class="hidden bg-slate-900/80 p-4 rounded-xl border border-slate-700 mt-4">
+        <h4 id="result-headline" class="font-bold text-center text-emerald-400 mb-3"></h4>
+        <div id="result-pokemon-grid" class="grid grid-cols-4 sm:grid-cols-6 gap-2 max-h-48 overflow-y-auto"></div>
+      </div>
+    </div>
+
+    <!-- 우측: 실시간 채팅 겸 정답 입력창 -->
+    <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700 flex flex-col h-[500px]">
+      <h3 class="font-bold text-slate-300 mb-2">💬 실시간 채팅 & 정답 입력</h3>
+      <div id="chat-log" class="flex-1 bg-slate-900 rounded-xl p-3 overflow-y-auto space-y-1.5 text-sm mb-3"></div>
+      <form onsubmit="sendChatOrAnswer(event)" class="flex gap-2">
+        <input id="chat-input" type="text" placeholder="채팅 또는 포켓몬 이름 입력..." autocomplete="off"
+          class="flex-1 p-2.5 rounded-lg bg-slate-900 border border-slate-600 focus:outline-none focus:border-yellow-400" />
+        <button type="submit" class="bg-yellow-500 text-slate-900 font-bold px-4 rounded-lg">전송</button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    const TYPES = ['노말','불꽃','물','풀','전기','얼음','격투','독','땅','비행','에스퍼','벌레','바위','고스트','드래곤','악','강철','페어리'];
+    let myId = null;
+    let currentRoomState = null;
+
+    socket.on('connect', () => { myId = socket.id; });
+    socket.on('error_msg', msg => alert(msg));
+
+    function submitNickname() {
+      const name = document.getElementById('input-nickname').value.trim();
+      if (!name) return alert('닉네임을 입력해 주세요!');
+      socket.emit('set_nickname', name);
+    }
+
+    socket.on('nickname_ok', () => {
+      document.getElementById('screen-nickname').classList.add('hidden');
+      document.getElementById('screen-lobby').classList.remove('hidden');
+    });
+
+    function createRoom() {
+      const title = document.getElementById('room-title').value;
+      const maxRounds = document.getElementById('room-rounds').value;
+      socket.emit('create_room', { title, maxRounds });
+    }
+
+    function joinByCode(code) {
+      const target = code || document.getElementById('join-code').value;
+      socket.emit('join_room', target);
+    }
+
+    socket.on('room_list', (list) => {
+      const container = document.getElementById('room-list-container');
+      if (list.length === 0) {
+        container.innerHTML = `<p class="text-slate-500 text-sm">현재 생성된 방이 없습니다.</p>`;
+        return;
+      }
+      container.innerHTML = list.map(r => `
+        <div class="flex justify-between items-center bg-slate-900 p-3 rounded-lg border border-slate-700">
+          <div>
+            <div class="font-bold text-sm">${r.title} <span class="text-xs text-yellow-400 font-mono">[${r.code}]</span></div>
+            <div class="text-xs text-slate-400">${r.maxRounds}라운드 | ${r.playerCount}/${r.maxPlayers}명</div>
+          </div>
+          <button onclick="joinByCode('${r.code}')" class="bg-blue-600 hover:bg-blue-500 text-xs px-3 py-1.5 rounded font-bold">
+            참가
+          </button>
+        </div>
+      `).join('');
+    });
+
+    socket.on('room_update', (room) => {
+      currentRoomState = room;
+      document.getElementById('screen-lobby').classList.add('hidden');
+      document.getElementById('screen-game').classList.remove('hidden');
+
+      document.getElementById('badge-room-code').textContent = `CODE: ${room.code}`;
+      document.getElementById('badge-round').textContent = room.state === 'WAITING'
+        ? `총 ${room.maxRounds}라운드`
+        : `ROUND ${room.currentRound} / ${room.maxRounds}`;
+      document.getElementById('player-count').textContent = room.players.length;
+
+      // 참가자 렌더링
+      const pList = document.getElementById('player-list');
+      pList.innerHTML = room.players.map(p => {
+        const isPickerA = room.pickers[0] === p.id;
+        const isPickerB = room.pickers[1] === p.id;
+        const badge = (isPickerA || isPickerB) ? `<span class="text-xs bg-pink-600 px-1.5 py-0.5 rounded ml-1">지목자</span>` : '';
+        return `
+          <div class="flex justify-between items-center bg-slate-900 px-3 py-2 rounded-lg">
+            <span class="text-sm font-medium">${p.id === room.hostId ? '👑 ' : ''}${p.nickname}${badge}</span>
+            <span class="text-yellow-400 font-bold text-sm">${p.score}점</span>
+          </div>
+        `;
+      }).join('');
+
+      // 방장 시작 버튼
+      const startBtn = document.getElementById('btn-start-game');
+      if (room.hostId === myId && (room.state === 'WAITING' || room.state === 'FINISHED')) {
+        startBtn.classList.remove('hidden');
+      } else {
+        startBtn.classList.add('hidden');
+      }
+
+      // 지목 페이즈 UI
+      const pickerBox = document.getElementById('type-picker-box');
+      if (room.state === 'PICKING') {
+        document.getElementById('round-result-box').classList.add('hidden');
+        const mySlot = room.pickers[0] === myId && !room.selectedTypes.A ? 'A'
+                     : room.pickers[1] === myId && !room.selectedTypes.B ? 'B' : null;
+
+        document.getElementById('arena-status').innerHTML = `
+          <h2 class="text-2xl font-bold text-yellow-400 mb-2">🎲 랜덤 지목자 2명이 타입을 고르는 중!</h2>
+          <p class="text-slate-300 text-sm">선택 현황: 첫 번째 [${room.selectedTypes.A ? '선택 완료' : '고르는 중...'}] / 두 번째 [${room.selectedTypes.B ? '선택 완료' : '고르는 중...'}]</p>
+        `;
+
+        if (mySlot) {
+          pickerBox.classList.remove('hidden');
+          document.getElementById('picker-guide').textContent = `당신은 [${mySlot === 'A' ? '첫 번째' : '두 번째'} 지목자]입니다! 타입 하나를 선택하세요.`;
+          document.getElementById('type-buttons').innerHTML = TYPES.map(t => `
+            <button onclick="pickType('${mySlot}', '${t}')" class="bg-slate-700 hover:bg-yellow-500 hover:text-slate-900 font-bold py-2 rounded text-sm transition">
+              ${t}
+            </button>
+          `).join('');
+        } else {
+          pickerBox.classList.add('hidden');
+        }
+      } else {
+        pickerBox.classList.add('hidden');
+      }
+    });
+
+    function startGame() { socket.emit('start_game'); }
+    function pickType(slot, type) { socket.emit('pick_type', { slot, type }); }
+
+    socket.on('quiz_start', ({ typeA, typeB, isSingle, specialLabel, totalCount }) => {
+      document.getElementById('round-result-box').classList.add('hidden');
+      const typeHeadline = isSingle ? `[ ${typeA} ] 단일 타입` : `[ ${typeA} + ${typeB} ] 복합 타입`;
+      const specialBanner = specialLabel
+        ? `<div class="mt-3 bg-gradient-to-r from-pink-600 to-purple-600 px-4 py-2 rounded-xl font-bold text-white animate-pulse">
+             🚨 돌발 스페셜 라운드 (2점!): ${specialLabel}
+           </div>`
+        : `<div class="mt-2 text-xs text-slate-400">일반 라운드 (추가 조건 없음, 1점)</div>`;
+
+      document.getElementById('arena-status').innerHTML = `
+        <div class="text-xs text-emerald-400 font-bold mb-1">해당하는 포켓몬 총 ${totalCount}마리 존재!</div>
+        <h2 class="text-3xl font-extrabold text-white">${typeHeadline}</h2>
+        ${specialBanner}
+        <p class="mt-4 text-sm text-yellow-300">우측 채팅창에 정답 포켓몬 이름을 가장 먼저 입력하세요!</p>
+        <div id="hint-area" class="mt-3 flex flex-col items-center"></div>
+      `;
+      document.getElementById('chat-input').focus();
+    });
+
+    socket.on('quiz_hint', ({ lengthHint, silhouetteImg }) => {
+      const hintArea = document.getElementById('hint-area');
+      if (!hintArea) return;
+      hintArea.innerHTML = `
+        <p class="text-xs text-amber-300 mb-1">💡 ${lengthHint}</p>
+        <img src="${silhouetteImg}" class="w-20 h-20 brightness-0 invert opacity-80" title="실루엣 힌트" />
+      `;
+    });
+
+    socket.on('round_result', ({ winnerName, pointsEarned, matchedPokemon, allAnswers, totalAnswerCount }) => {
+      const box = document.getElementById('round-result-box');
+      box.classList.remove('hidden');
+
+      const headline = document.getElementById('result-headline');
+      if (winnerName) {
+        headline.textContent = `🎉 ${winnerName}님이 [${matchedPokemon.name_ko}] 정답! (+${pointsEarned}점)`;
+      } else {
+        headline.textContent = `⏰ 시간 초과! 아무도 맞히지 못했습니다.`;
+      }
+
+      document.getElementById('result-pokemon-grid').innerHTML = allAnswers.map(p => `
+        <div class="bg-slate-800 p-1.5 rounded text-center border border-slate-700">
+          <img src="${p.img}" class="w-12 h-12 mx-auto" />
+          <div class="text-[11px] truncate">${p.name}</div>
+        </div>
+      `).join('');
+    });
+
+    socket.on('game_over', ({ rankings }) => {
+      const top = rankings[0];
+      document.getElementById('arena-status').innerHTML = `
+        <h2 class="text-3xl font-extrabold text-yellow-400 mb-2">🏆 게임 종료! 최종 우승: ${top ? top.nickname : '-'}</h2>
+        <p class="text-slate-300 text-sm">방장이 [게임 시작하기]를 누르면 새 게임을 시작합니다.</p>
+      `;
+    });
+
+    function sendChatOrAnswer(e) {
+      e.preventDefault();
+      const input = document.getElementById('chat-input');
+      if (!input.value.trim()) return;
+      socket.emit('chat_or_answer', input.value);
+      input.value = '';
+    }
+
+    socket.on('chat_msg', ({ nickname, text }) => {
+      const log = document.getElementById('chat-log');
+      log.innerHTML += `<div><span class="font-bold text-blue-300">${nickname}:</span> <span>${text}</span></div>`;
+      log.scrollTop = log.scrollHeight;
+    });
+
+    socket.on('system_msg', (msg) => {
+      const log = document.getElementById('chat-log');
+      log.innerHTML += `<div class="text-yellow-400 text-xs font-semibold">${msg}</div>`;
+      log.scrollTop = log.scrollHeight;
+    });
+  </script>
+</body>
+</html>
