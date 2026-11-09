@@ -3,25 +3,44 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>포켓몬 타입 스피드 퀴즈 온라인</title>
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-900 text-white min-h-screen flex flex-col items-center p-4">
 
+  <!-- 상단 사운드 컨트롤 바 -->
+  <div class="w-full max-w-6xl flex justify-between items-center bg-slate-800/90 border border-slate-700 px-4 py-2.5 rounded-xl mb-2 shadow">
+    <div class="flex items-center gap-2">
+      <span class="text-yellow-400 font-extrabold text-sm sm:text-base">⚡ 포켓몬 퀴즈 아레나</span>
+    </div>
+    <div class="flex items-center gap-2 sm:gap-3 text-xs sm:text-sm">
+      <button id="btn-bgm" onclick="toggleBGM()" class="bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-lg font-bold transition">
+        🎵 BGM: OFF
+      </button>
+      <button id="btn-sfx" onclick="toggleSFX()" class="bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 rounded-lg font-bold transition">
+        🔊 효과음/울음소리: ON
+      </button>
+      <input id="vol-slider" type="range" min="0" max="1" step="0.05" value="0.5" onchange="changeVolume(this.value)"
+        class="w-16 sm:w-24 accent-yellow-400 cursor-pointer" title="볼륨 조절" />
+    </div>
+  </div>
+
   <!-- 1. 닉네임 설정 화면 -->
-  <div id="screen-nickname" class="w-full max-w-md bg-slate-800 rounded-2xl p-6 mt-20 shadow-xl border border-slate-700">
+  <div id="screen-nickname" class="w-full max-w-md bg-slate-800 rounded-2xl p-6 mt-14 shadow-xl border border-slate-700">
     <h1 class="text-2xl font-bold text-center text-yellow-400 mb-2">⚡ 포켓몬 타입 퀴즈 온라인</h1>
     <p class="text-slate-400 text-sm text-center mb-6">전 세대 포켓몬 실시간 멀티플레이 스피드 대결</p>
     <input id="input-nickname" type="text" maxlength="12" placeholder="사용할 닉네임 입력 (최대 12자)"
+      onkeydown="if(event.key==='Enter') submitNickname()"
       class="w-full p-3 rounded-lg bg-slate-900 border border-slate-600 mb-4 focus:outline-none focus:border-yellow-400" />
     <button onclick="submitNickname()" class="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-3 rounded-lg">
-      입장하기
+      입장하기 (사운드 활성화)
     </button>
   </div>
 
   <!-- 2. 로비 화면 (방 만들기 / 방 참가) -->
-  <div id="screen-lobby" class="hidden w-full max-w-4xl mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
+  <div id="screen-lobby" class="hidden w-full max-w-4xl mt-6 grid grid-cols-1 md:grid-cols-2 gap-6">
     <!-- 방 생성 & 코드 입장 -->
     <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700">
       <h2 class="text-xl font-bold text-yellow-400 mb-4">🏠 게임방 만들기</h2>
@@ -58,7 +77,7 @@
   </div>
 
   <!-- 3. 게임방 화면 -->
-  <div id="screen-game" class="hidden w-full max-w-6xl mt-4 grid grid-cols-1 lg:grid-cols-4 gap-4">
+  <div id="screen-game" class="hidden w-full max-w-6xl mt-2 grid grid-cols-1 lg:grid-cols-4 gap-4">
     <!-- 좌측: 참가자 목록 (최대 10명) -->
     <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700">
       <div class="flex justify-between items-center mb-3">
@@ -85,8 +104,10 @@
       </div>
 
       <!-- 정답 결과 도감 모달 영역 -->
-      <div id="round-result-box" class="hidden bg-slate-900/80 p-4 rounded-xl border border-slate-700 mt-4">
-        <h4 id="result-headline" class="font-bold text-center text-emerald-400 mb-3"></h4>
+      <div id="round-result-box" class="hidden bg-slate-900/90 p-4 rounded-xl border border-slate-700 mt-4">
+        <div id="winner-showcase" class="hidden flex flex-col items-center mb-3 p-3 bg-slate-800 rounded-xl border border-emerald-500/40"></div>
+        <h4 id="result-headline" class="font-bold text-center text-emerald-400 mb-2"></h4>
+        <p class="text-center text-[11px] text-slate-400 mb-2">💡 아래 포켓몬 카드를 클릭하면 울음소리를 들을 수 있습니다!</p>
         <div id="result-pokemon-grid" class="grid grid-cols-4 sm:grid-cols-6 gap-2 max-h-48 overflow-y-auto"></div>
       </div>
     </div>
@@ -109,12 +130,164 @@
     let myId = null;
     let currentRoomState = null;
 
+    // ==========================================
+    // 🎵 사운드 엔진 (8비트 레트로 BGM + 효과음 + 포켓몬 공식 울음소리)
+    // ==========================================
+    let audioCtx = null;
+    let bgmEnabled = false;
+    let sfxEnabled = true;
+    let masterVol = 0.5;
+    let bgmInterval = null;
+    let bgmStep = 0;
+
+    function initAudio() {
+      if (!audioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioContext();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+
+    function changeVolume(val) {
+      masterVol = parseFloat(val);
+    }
+
+    function playTone(freq, type, duration, delay = 0, volScale = 0.25) {
+      if (!sfxEnabled && volScale !== 0.12) return;
+      initAudio();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, audioCtx.currentTime + delay);
+
+      const v = Math.max(0.001, masterVol * volScale);
+      gain.gain.setValueAtTime(v, audioCtx.currentTime + delay);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + delay + duration);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(audioCtx.currentTime + delay);
+      osc.stop(audioCtx.currentTime + delay + duration);
+    }
+
+    // 상황별 효과음 모음
+    const SFX = {
+      click: () => playTone(660, 'square', 0.07, 0, 0.2),
+      roundStart: () => {
+        playTone(440, 'square', 0.1, 0, 0.25);
+        playTone(554, 'square', 0.1, 0.1, 0.25);
+        playTone(659, 'square', 0.2, 0.2, 0.3);
+      },
+      specialAlert: () => {
+        // 스페셜 라운드 사이렌 효과음
+        [0, 0.2, 0.4].forEach(d => {
+          playTone(880, 'sawtooth', 0.09, d, 0.3);
+          playTone(587, 'sawtooth', 0.09, d + 0.1, 0.3);
+        });
+      },
+      correct: () => {
+        // 포켓몬 레벨업 / 정답 팡파레
+        const notes = [523.25, 523.25, 523.25, 523.25, 415.30, 466.16, 523.25, 466.16, 523.25];
+        const times = [0, 0.11, 0.22, 0.33, 0.46, 0.60, 0.74, 0.86, 0.98];
+        const durs  = [0.09, 0.09, 0.09, 0.11, 0.12, 0.12, 0.10, 0.10, 0.40];
+        notes.forEach((n, i) => playTone(n, 'square', durs[i], times[i], 0.3));
+      },
+      hint: () => {
+        playTone(784, 'sine', 0.1, 0, 0.25);
+        playTone(1046.5, 'sine', 0.2, 0.1, 0.25);
+      },
+      timeout: () => {
+        playTone(300, 'sawtooth', 0.18, 0, 0.25);
+        playTone(250, 'sawtooth', 0.18, 0.18, 0.25);
+        playTone(200, 'sawtooth', 0.35, 0.36, 0.25);
+      },
+      victory: () => {
+        const notes = [523.25, 659.25, 783.99, 1046.50, 783.99, 1046.50];
+        const times = [0, 0.15, 0.30, 0.45, 0.65, 0.80];
+        notes.forEach((n, i) => playTone(n, 'square', 0.2, times[i], 0.35));
+      }
+    };
+
+    // 포켓몬 공식 울음소리 재생 함수 (PokeAPI Cries 연동)
+    function playPokemonCry(pokemonId) {
+      if (!sfxEnabled || !pokemonId) return;
+      const cryUrl = `https://raw.githubusercontent.com/PokeAPI/cries/main/cries/pokemon/latest/${pokemonId}.ogg`;
+      const audio = new Audio(cryUrl);
+      audio.volume = Math.min(1, masterVol * 0.9);
+      audio.play().catch(() => {
+        // 구형 브라우저 또는 ogg 미지원 시 legacy 울음소리 폴백
+        const fallback = new Audio(`https://raw.githubusercontent.com/PokeAPI/cries/main/cries/pokemon/legacy/${pokemonId}.ogg`);
+        fallback.volume = Math.min(1, masterVol * 0.9);
+        fallback.play().catch(() => {});
+      });
+    }
+
+    // 스프라이트 이미지 URL에서 포켓몬 ID 추출 헬퍼
+    function extractIdFromImg(imgUrl) {
+      if (!imgUrl) return null;
+      const match = imgUrl.match(/\/(\d+)\.png$/);
+      return match ? match[1] : null;
+    }
+
+    // 8비트 포켓몬 배틀 스타일 배경음악 루프
+    const BGM_MELODY = [
+      330, 392, 440, 392, 523, 494, 440, 392,
+      349, 440, 523, 440, 587, 523, 494, 392,
+      330, 392, 440, 523, 659, 587, 523, 494,
+      440, 392, 349, 330, 294, 330, 392, 440
+    ];
+
+    function toggleBGM() {
+      initAudio();
+      bgmEnabled = !bgmEnabled;
+      const btn = document.getElementById('btn-bgm');
+      if (bgmEnabled) {
+        btn.textContent = '🎵 BGM: ON';
+        btn.className = 'bg-yellow-500 text-slate-900 px-3 py-1.5 rounded-lg font-bold transition';
+        bgmStep = 0;
+        bgmInterval = setInterval(() => {
+          if (!bgmEnabled) return;
+          const freq = BGM_MELODY[bgmStep % BGM_MELODY.length];
+          playTone(freq, 'triangle', 0.16, 0, 0.12);
+          if (bgmStep % 2 === 0) playTone(freq / 2, 'square', 0.12, 0, 0.06);
+          bgmStep++;
+        }, 190);
+      } else {
+        btn.textContent = '🎵 BGM: OFF';
+        btn.className = 'bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-lg font-bold transition';
+        clearInterval(bgmInterval);
+      }
+    }
+
+    function toggleSFX() {
+      initAudio();
+      sfxEnabled = !sfxEnabled;
+      const btn = document.getElementById('btn-sfx');
+      if (sfxEnabled) {
+        btn.textContent = '🔊 효과음/울음소리: ON';
+        btn.className = 'bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 rounded-lg font-bold transition';
+        SFX.click();
+      } else {
+        btn.textContent = '🔇 효과음/울음소리: OFF';
+        btn.className = 'bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-lg font-bold transition';
+      }
+    }
+
+    // ==========================================
+    // 🌐 소켓 통신 및 게임 로직
+    // ==========================================
     socket.on('connect', () => { myId = socket.id; });
     socket.on('error_msg', msg => alert(msg));
 
     function submitNickname() {
+      initAudio();
       const name = document.getElementById('input-nickname').value.trim();
       if (!name) return alert('닉네임을 입력해 주세요!');
+      SFX.click();
+      // 입장 시 BGM 자동 시작을 원하면 아래 주석 해제 가능
+      if (!bgmEnabled) toggleBGM();
       socket.emit('set_nickname', name);
     }
 
@@ -124,12 +297,14 @@
     });
 
     function createRoom() {
+      SFX.click();
       const title = document.getElementById('room-title').value;
       const maxRounds = document.getElementById('room-rounds').value;
       socket.emit('create_room', { title, maxRounds });
     }
 
     function joinByCode(code) {
+      SFX.click();
       const target = code || document.getElementById('join-code').value;
       socket.emit('join_room', target);
     }
@@ -214,11 +389,24 @@
       }
     });
 
-    function startGame() { socket.emit('start_game'); }
-    function pickType(slot, type) { socket.emit('pick_type', { slot, type }); }
+    function startGame() {
+      SFX.click();
+      socket.emit('start_game');
+    }
+
+    function pickType(slot, type) {
+      SFX.click();
+      socket.emit('pick_type', { slot, type });
+    }
 
     socket.on('quiz_start', ({ typeA, typeB, isSingle, specialLabel, totalCount }) => {
       document.getElementById('round-result-box').classList.add('hidden');
+      if (specialLabel) {
+        SFX.specialAlert();
+      } else {
+        SFX.roundStart();
+      }
+
       const typeHeadline = isSingle ? `[ ${typeA} ] 단일 타입` : `[ ${typeA} + ${typeB} ] 복합 타입`;
       const specialBanner = specialLabel
         ? `<div class="mt-3 bg-gradient-to-r from-pink-600 to-purple-600 px-4 py-2 rounded-xl font-bold text-white animate-pulse">
@@ -237,6 +425,7 @@
     });
 
     socket.on('quiz_hint', ({ lengthHint, silhouetteImg }) => {
+      SFX.hint();
       const hintArea = document.getElementById('hint-area');
       if (!hintArea) return;
       hintArea.innerHTML = `
@@ -247,24 +436,48 @@
 
     socket.on('round_result', ({ winnerName, pointsEarned, matchedPokemon, allAnswers, totalAnswerCount }) => {
       const box = document.getElementById('round-result-box');
+      const showcase = document.getElementById('winner-showcase');
       box.classList.remove('hidden');
 
       const headline = document.getElementById('result-headline');
-      if (winnerName) {
-        headline.textContent = `🎉 ${winnerName}님이 [${matchedPokemon.name_ko}] 정답! (+${pointsEarned}점)`;
+      if (winnerName && matchedPokemon) {
+        SFX.correct();
+        // 팡파레 직후 정답 포켓몬 공식 울음소리 출력!
+        setTimeout(() => playPokemonCry(matchedPokemon.id), 350);
+
+        showcase.classList.remove('hidden');
+        showcase.innerHTML = `
+          <div class="flex items-center gap-4">
+            <img src="${matchedPokemon.img}" class="w-20 h-20 animate-bounce cursor-pointer" onclick="playPokemonCry(${matchedPokemon.id})" title="클릭하여 울음소리 다시 듣기" />
+            <div class="text-left">
+              <div class="text-xs text-emerald-400 font-bold">정답 포켓몬</div>
+              <div class="text-xl font-extrabold text-white">${matchedPokemon.name_ko}</div>
+              <button onclick="playPokemonCry(${matchedPokemon.id})" class="mt-1 text-xs bg-slate-700 hover:bg-slate-600 px-2.5 py-1 rounded text-yellow-300 font-bold">
+                🔊 울음소리 다시 듣기
+              </button>
+            </div>
+          </div>
+        `;
+        headline.textContent = `🎉 ${winnerName}님이 정답을 맞혔습니다! (+${pointsEarned}점)`;
       } else {
+        SFX.timeout();
+        showcase.classList.add('hidden');
         headline.textContent = `⏰ 시간 초과! 아무도 맞히지 못했습니다.`;
       }
 
-      document.getElementById('result-pokemon-grid').innerHTML = allAnswers.map(p => `
-        <div class="bg-slate-800 p-1.5 rounded text-center border border-slate-700">
-          <img src="${p.img}" class="w-12 h-12 mx-auto" />
-          <div class="text-[11px] truncate">${p.name}</div>
-        </div>
-      `).join('');
+      document.getElementById('result-pokemon-grid').innerHTML = allAnswers.map(p => {
+        const pid = extractIdFromImg(p.img);
+        return `
+          <div onclick="playPokemonCry('${pid}')" class="bg-slate-800 hover:bg-slate-700 cursor-pointer p-1.5 rounded text-center border border-slate-700 transition" title="클릭하면 울음소리 재생">
+            <img src="${p.img}" class="w-12 h-12 mx-auto" />
+            <div class="text-[11px] truncate">${p.name}</div>
+          </div>
+        `;
+      }).join('');
     });
 
     socket.on('game_over', ({ rankings }) => {
+      SFX.victory();
       const top = rankings[0];
       document.getElementById('arena-status').innerHTML = `
         <h2 class="text-3xl font-extrabold text-yellow-400 mb-2">🏆 게임 종료! 최종 우승: ${top ? top.nickname : '-'}</h2>
