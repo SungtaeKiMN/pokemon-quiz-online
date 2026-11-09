@@ -1,130 +1,65 @@
-// build-db.js
 const fs = require('fs');
-
-const TYPE_KO = {
-  normal: '노말', fighting: '격투', flying: '비행', poison: '독', ground: '땅',
-  rock: '바위', bug: '벌레', ghost: '고스트', steel: '강철', fire: '불꽃',
-  water: '물', grass: '풀', electric: '전기', psychic: '에스퍼', ice: '얼음',
-  dragon: '드래곤', dark: '악', fairy: '페어리'
-};
-
-const GEN_MAP = {
-  'generation-i': 1, 'generation-ii': 2, 'generation-iii': 3,
-  'generation-iv': 4, 'generation-v': 5, 'generation-vi': 6,
-  'generation-vii': 7, 'generation-viii': 8, 'generation-ix': 9
-};
-
+const TYPE_KO = {1:'노말',2:'격투',3:'비행',4:'독',5:'땅',6:'바위',7:'벌레',8:'고스트',9:'강철',10:'불꽃',11:'물',12:'풀',13:'전기',14:'에스퍼',15:'얼음',16:'드래곤',17:'악',18:'페어리'};
+const BASE = 'https://raw.githubusercontent.com/PokeAPI/pokeapi/master/data/v2/csv';
+function parseCSV(text) {
+  return text.trim().split(/\r?\n/).slice(1).map(line => line.split(','));
+}
 async function buildDatabase() {
-  console.log('PokeAPI에서 전 세대 포켓몬 한글 데이터를 가져오는 중...');
-
-  const query = `
-  query {
-    pokemon_v2_pokemonforms(where: {is_battle_only: {_eq: false}}) {
-      form_name
-      pokemon_v2_pokemon {
-        id
-        is_default
-        pokemon_v2_pokemontypes {
-          pokemon_v2_type { name }
-        }
-        pokemon_v2_pokemonspecy {
-          id
-          is_legendary
-          is_mythical
-          pokemon_v2_generation { name }
-          pokemon_v2_pokemonspeciesnames(where: {language_id: {_eq: 3}}) {
-            name
-          }
-        }
-      }
-      pokemon_v2_pokemonformnames(where: {language_id: {_eq: 3}}) {
-        name
-        pokemon_name
-      }
+  if (fs.existsSync('./pokemon_db.json')) {
+    try {
+      const ex = JSON.parse(fs.readFileSync('./pokemon_db.json','utf-8'));
+      if (Array.isArray(ex) && ex.length > 500) { console.log('✅ 기존 DB 확인 완료:', ex.length); return; }
+    } catch(e) {}
+  }
+  console.log('공식 GitHub 데이터에서 전 세대 포켓몬 한글 DB 생성 중...');
+  const [spTxt, nmTxt, pkTxt, tpTxt] = await Promise.all([
+    fetch(BASE + '/pokemon_species.csv').then(r => r.text()),
+    fetch(BASE + '/pokemon_species_names.csv').then(r => r.text()),
+    fetch(BASE + '/pokemon.csv').then(r => r.text()),
+    fetch(BASE + '/pokemon_types.csv').then(r => r.text())
+  ]);
+  const speciesMap = new Map();
+  for (const r of parseCSV(spTxt)) {
+    speciesMap.set(Number(r[0]), { gen: Number(r[2]) || 1, is_legendary: r[8] === '1' || r[9] === '1' });
+  }
+  const koNameMap = new Map();
+  for (const r of parseCSV(nmTxt)) {
+    if (r[1] === '3') koNameMap.set(Number(r[0]), r[2]);
+  }
+  const typeMap = new Map();
+  for (const r of parseCSV(tpTxt)) {
+    const pid = Number(r[0]), tid = Number(r[1]);
+    if (!TYPE_KO[tid]) continue;
+    if (!typeMap.has(pid)) typeMap.set(pid, []);
+    typeMap.get(pid).push(TYPE_KO[tid]);
+  }
+  const finalDB = [];
+  for (const r of parseCSV(pkTxt)) {
+    const id = Number(r[0]), identifier = r[1], specId = Number(r[2]), isDef = r[7] === '1';
+    const sp = speciesMap.get(specId), baseKo = koNameMap.get(specId), types = typeMap.get(id);
+    if (!sp || !baseKo || !types || !types.length) continue;
+    const isMega = /-mega|-primal/.test(identifier);
+    const isRegional = /-alola|-galar|-hisui|-paldea/.test(identifier);
+    if (!isDef && !isMega && !isRegional) continue;
+    let displayName = baseKo;
+    if (isMega) {
+      const suffix = identifier.endsWith('-x') ? 'X' : identifier.endsWith('-y') ? 'Y' : '';
+      displayName = (identifier.includes('-primal') ? '원시' : '메가') + baseKo + suffix;
+    } else if (isRegional) {
+      const pfx = identifier.includes('-alola') ? '알로라 ' : identifier.includes('-galar') ? '가라르 ' : identifier.includes('-hisui') ? '히스이 ' : '팔데아 ';
+      displayName = pfx + baseKo;
     }
-    mega_forms: pokemon_v2_pokemonforms(where: {form_name: {_iregex: "mega|primal"}}) {
-      form_name
-      pokemon_v2_pokemon {
-        id
-        pokemon_v2_pokemontypes {
-          pokemon_v2_type { name }
-        }
-        pokemon_v2_pokemonspecy {
-          id
-          is_legendary
-          is_mythical
-          pokemon_v2_generation { name }
-          pokemon_v2_pokemonspeciesnames(where: {language_id: {_eq: 3}}) {
-            name
-          }
-        }
-      }
-      pokemon_v2_pokemonformnames(where: {language_id: {_eq: 3}}) {
-        name
-        pokemon_name
-      }
-    }
-  }`;
-
-  const res = await fetch('https://beta.pokeapi.co/graphql/v1beta', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query })
-  });
-
-  const json = await res.json();
-  const rawList = [...json.data.pokemon_v2_pokemonforms, ...json.data.mega_forms];
-  const dbMap = new Map();
-
-  for (const item of rawList) {
-    const poke = item.pokemon_v2_pokemon;
-    const specy = poke.pokemon_v2_pokemonspecy;
-    if (!specy || !specy.pokemon_v2_pokemonspeciesnames.length) continue;
-
-    const baseNameKo = specy.pokemon_v2_pokemonspeciesnames[0].name.trim();
-    const formNameObj = item.pokemon_v2_pokemonformnames?.[0];
-    const formNameKo = formNameObj?.pokemon_name || formNameObj?.name || baseNameKo;
-    const formTag = item.form_name || '';
-
-    const isMega = /mega|primal/.test(formTag);
-    const isRegional = /alola|galar|hisui|paldea/.test(formTag);
-
-    // 기본 폼도 아니고 메가/리전폼도 아닌 단순 외형 차이(모자 피카츄 등)는 중복 방지를 위해 제외
-    if (!poke.is_default && !isMega && !isRegional) continue;
-
-    const types = poke.pokemon_v2_pokemontypes.map(t => TYPE_KO[t.pokemon_v2_type.name]).filter(Boolean);
-    if (types.length === 0) continue;
-
-    let displayName = baseNameKo;
-    if (isMega) displayName = formNameKo.includes('메가') || formNameKo.includes('원시') ? formNameKo : `메가${baseNameKo}`;
-    if (isRegional) {
-      const prefix = formTag.includes('alola') ? '알로라 ' : formTag.includes('galar') ? '가라르 ' : formTag.includes('hisui') ? '히스이 ' : '팔데아 ';
-      displayName = formNameKo !== baseNameKo ? formNameKo : `${prefix}${baseNameKo}`;
-    }
-
-    const cleanAnswer = displayName.replace(/\s+/g, '');
-    const cleanBase = baseNameKo.replace(/\s+/g, '');
-
-    const key = `${poke.id}_${formTag}`;
-    dbMap.set(key, {
-      id: poke.id,
-      dex: specy.id,
-      name_ko: displayName,
-      accepted_answers: Array.from(new Set([cleanAnswer, cleanBase])), // '메가리자몽X'와 '리자몽' 둘 다 정답 인정
-      types,
-      is_single: types.length === 1,
-      gen: GEN_MAP[specy.pokemon_v2_generation.name] || 1,
-      is_mega: isMega,
-      is_regional: isRegional,
-      is_legendary: specy.is_legendary || specy.is_mythical,
-      name_len: cleanBase.length,
-      img: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${poke.id}.png`
+    const cleanAns = displayName.replace(/\s+/g, ''), cleanBase = baseKo.replace(/\s+/g, '');
+    finalDB.push({
+      id, dex: specId, name_ko: displayName,
+      accepted_answers: Array.from(new Set([cleanAns, cleanBase])),
+      types, is_single: types.length === 1,
+      gen: sp.gen, is_mega: isMega, is_regional: isRegional,
+      is_legendary: sp.is_legendary, name_len: cleanBase.length,
+      img: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/' + id + '.png'
     });
   }
-
-  const finalDB = Array.from(dbMap.values());
   fs.writeFileSync('./pokemon_db.json', JSON.stringify(finalDB, null, 2), 'utf-8');
-  console.log(`완료! 총 ${finalDB.length}마리의 포켓몬 데이터가 pokemon_db.json에 저장되었습니다.`);
+  console.log('🎉 완료! 총 ' + finalDB.length + '마리의 포켓몬 데이터가 pokemon_db.json에 저장되었습니다!');
 }
-
 buildDatabase();
